@@ -10,8 +10,9 @@ import (
 )
 
 type SeekReader struct {
-	f  *os.File
-	br *bufio.Reader
+	f        *os.File
+	br       *bufio.Reader
+	position int64
 }
 
 func NewSeekReader(filePath string) (*SeekReader, error) {
@@ -26,30 +27,36 @@ func NewSeekReader(filePath string) (*SeekReader, error) {
 	}, nil
 }
 
-func (r *SeekReader) Line(offset int) (Line, error) {
+func (r *SeekReader) Line(offset int) (*Line, error) {
 	_, err := r.f.Seek(int64(offset), io.SeekStart)
 	if err != nil {
-		return Line{}, err
+		return nil, err
 	}
 
 	r.br.Reset(r.f)
-	_, err = r.br.ReadBytes('\n')
+	skipData, err := r.br.ReadBytes('\n')
 	if err != nil {
-		return Line{}, err
+		return nil, err
 	}
 
 	data, err := r.br.ReadBytes('\n')
 	if err != nil {
-		if !errors.Is(err, io.EOF) || len(data) == 0 {
-			return Line{}, err
+		if !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		if len(data) == 0 {
+			return nil, nil
 		}
 	}
 
+	r.position += int64(len(skipData) + len(data))
 	dotIndex := bytes.IndexByte(data, '.')
-	index, _ := strconv.Atoi(string(data[:dotIndex]))
-	return Line{
-		index: index,
-		text:  data[dotIndex+1 : len(data)-1],
+	index, _ := strconv.ParseInt(string(data[:dotIndex]), 10, 64)
+	text := data[dotIndex+1 : len(data)-1]
+	return &Line{
+		index:    index,
+		text:     text,
+		position: r.position,
 	}, nil
 }
 

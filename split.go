@@ -1,9 +1,7 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"math/rand"
 	"os"
@@ -18,11 +16,12 @@ const (
 )
 
 type Splitter struct {
-	MaxFileSize int
-	ChunkSize   int
-	TempDir     string
-	Seed        int64
-	WorkerCount int
+	MaxFileSize  int
+	ChunkSize    int
+	TempDir      string
+	Seed         int64
+	WorkerCount  int
+	CollatorPool *CollatorPool
 
 	randGenerator     *rand.Rand
 	nextTempFileIndex int
@@ -59,15 +58,18 @@ func (s *Splitter) splitFile(f File) ([]File, error) {
 		return nil, err
 	}
 
+	collator := s.CollatorPool.Get()
+	defer s.CollatorPool.Put(collator)
+
 	reader, err := NewReader(f.Path)
 	if err != nil {
 		return nil, err
 	}
 
-	writersInput := make([]chan []Line, len(chunkStarts)+1)
+	writersInput := make([]chan []*Line, len(chunkStarts)+1)
 	writers := make([]*Writer, len(chunkStarts)+1)
 
-	lineBatchCh := make(chan []Line, s.WorkerCount)
+	lineBatchCh := make(chan []*Line, s.WorkerCount)
 
 	var writersWG sync.WaitGroup
 	for i := range writers {
@@ -75,10 +77,10 @@ func (s *Splitter) splitFile(f File) ([]File, error) {
 		s.nextTempFileIndex++
 
 		writers[i], err = NewWriter(writerPath)
-		writersInput[i] = make(chan []Line, lineBatchSize)
+		writersInput[i] = make(chan []*Line, lineBatchSize)
 
 		writersWG.Add(1)
-		go func(w *Writer, linesCh <-chan []Line) {
+		go func(w *Writer, linesCh <-chan []*Line) {
 			defer writersWG.Done()
 			s.writeLines(w, linesCh)
 		}(writers[i], writersInput[i])
@@ -93,21 +95,21 @@ func (s *Splitter) splitFile(f File) ([]File, error) {
 		}()
 	}
 
-	lineBatch := make([]Line, 0, lineBatchSize)
+	lineBatch := make([]*Line, 0, lineBatchSize)
 	for {
 		line, err := reader.NextLine()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
 			return nil, err
+		}
+		if line == nil {
+			break
 		}
 
 		lineBatch = append(lineBatch, line)
 
 		if len(lineBatch) >= lineBatchSize {
 			lineBatchCh <- lineBatch
-			lineBatch = make([]Line, 0, lineBatchSize)
+			lineBatch = make([]*Line, 0, lineBatchSize)
 		}
 	}
 
@@ -133,7 +135,10 @@ func (s *Splitter) splitFile(f File) ([]File, error) {
 	return splitFiles, nil
 }
 
-func (s *Splitter) getChunkStarts(f File) ([]Line, error) {
+func (s *Splitter) getChunkStarts(f File) ([]*Line, error) {
+	collator := s.CollatorPool.Get()
+	defer s.CollatorPool.Put(collator)
+
 	chunkCount := (f.Size-1)/s.ChunkSize + 1
 	seekReader, err := NewSeekReader(f.Path)
 	if err != nil {
@@ -147,13 +152,13 @@ func (s *Splitter) getChunkStarts(f File) ([]Line, error) {
 	}
 	sort.Ints(offsets)
 
-	chunkStarts := make([]Line, 0, len(offsets))
+	chunkStarts := make([]*Line, 0, len(offsets))
 	for _, offset := range offsets {
 		line, err := seekReader.Line(offset)
 		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				return nil, err
-			}
+			return nil, err
+		}
+		if line == nil {
 			continue
 		}
 
@@ -166,12 +171,12 @@ func (s *Splitter) getChunkStarts(f File) ([]Line, error) {
 	}
 
 	sort.Slice(chunkStarts, func(i, j int) bool {
-		return chunkStarts[i].Less(chunkStarts[j])
+		return chunkStarts[i].Less(chunkStarts[j], collator)
 	})
 
 	// Remove possible duplicates
 	for i := len(chunkStarts) - 1; i > 0; i-- {
-		if chunkStarts[i].Equal(chunkStarts[i-1]) {
+		if chunkStarts[i].Same(chunkStarts[i-1]) {
 			copy(chunkStarts[i+1:], chunkStarts[i:])
 			chunkStarts = chunkStarts[:len(chunkStarts)-1]
 		}
@@ -180,15 +185,18 @@ func (s *Splitter) getChunkStarts(f File) ([]Line, error) {
 	return chunkStarts, nil
 }
 
-func (s *Splitter) splitLines(chunkStarts []Line, lineBatchCh <-chan []Line, writersInput []chan []Line) {
+func (s *Splitter) splitLines(chunkStarts []*Line, lineBatchCh <-chan []*Line, writersInput []chan []*Line) {
+	collator := s.CollatorPool.Get()
+	defer s.CollatorPool.Put(collator)
+
 	for lines := range lineBatchCh {
-		chunkIndexes := make(map[int][]Line)
+		chunkIndexes := make(map[int][]*Line)
 		for _, line := range lines {
 			chunkIndex := sort.Search(len(chunkStarts), func(i int) bool {
-				return !chunkStarts[i].Less(line)
+				return !chunkStarts[i].Less(line, collator)
 			})
 
-			if chunkIndex < len(chunkStarts) && line.Equal(chunkStarts[chunkIndex]) {
+			if chunkIndex < len(chunkStarts) && line.Same(chunkStarts[chunkIndex]) {
 				chunkIndex++
 			}
 
@@ -201,7 +209,7 @@ func (s *Splitter) splitLines(chunkStarts []Line, lineBatchCh <-chan []Line, wri
 	}
 }
 
-func (s *Splitter) writeLines(w *Writer, linesCh <-chan []Line) {
+func (s *Splitter) writeLines(w *Writer, linesCh <-chan []*Line) {
 	for lines := range linesCh {
 		err := w.WriteLines(lines)
 		if err != nil {

@@ -1,16 +1,17 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"golang.org/x/text/collate"
+	"golang.org/x/text/language"
 )
 
 type File struct {
@@ -23,12 +24,13 @@ func main() {
 	var checkSorted bool
 	var maxFileSize, chunkSize int
 	var seed int64
-	var tempDir string
+	var tempDir, lang string
 	flag.BoolVar(&checkSorted, "check", false, "check SOURCE_FILE is sorted")
-	flag.IntVar(&maxFileSize, "maxSize", 1*1024*1024*1024, "max file size to sort in-memory (bytes)")
+	flag.IntVar(&maxFileSize, "maxSize", 512*1024*1024, "max file size to sort in-memory (bytes)")
 	flag.IntVar(&chunkSize, "chunkSize", 0, "chunk size (bytes)")
 	flag.Int64Var(&seed, "seed", 0, "seed")
 	flag.StringVar(&tempDir, "tempDir", "", "temp dir")
+	flag.StringVar(&lang, "lang", "russian", "language")
 
 	flag.Parse()
 
@@ -48,12 +50,25 @@ func main() {
 		outputPath = strings.TrimSuffix(sourcePath, ext) + ".sorted" + ext
 	}
 
+	var collatorFactory func() *collate.Collator
+	if lang != "" {
+		switch strings.ToLower(lang) {
+		case "russian":
+			collatorFactory = func() *collate.Collator { return collate.New(language.Russian) }
+		case "bytes":
+		default:
+			log.Fatal("unsupported language", lang)
+		}
+	}
+
+	collatorPool := NewCollatorPool(collatorFactory)
+
 	var err error
 	if checkSorted {
-		err = checkIsSorted(sourcePath)
+		err = checkIsSorted(sourcePath, collatorPool)
 	} else {
 		if chunkSize == 0 {
-			chunkSize = maxFileSize / 100
+			chunkSize = maxFileSize / 50
 		}
 
 		if seed == 0 {
@@ -74,7 +89,7 @@ func main() {
 			}
 		}
 
-		err = splitAndSort(sourcePath, outputPath, maxFileSize, chunkSize, seed, tempDir)
+		err = splitAndSort(sourcePath, outputPath, maxFileSize, chunkSize, seed, tempDir, collatorPool)
 	}
 
 	if err != nil {
@@ -82,13 +97,14 @@ func main() {
 	}
 }
 
-func splitAndSort(sourcePath, outputPath string, maxFileSize, chunkSize int, seed int64, tempDir string) error {
+func splitAndSort(sourcePath, outputPath string, maxFileSize, chunkSize int, seed int64, tempDir string, collatorPool *CollatorPool) error {
 	splitter := Splitter{
-		MaxFileSize: maxFileSize,
-		ChunkSize:   chunkSize,
-		TempDir:     tempDir,
-		Seed:        seed,
-		WorkerCount: runtime.NumCPU(),
+		MaxFileSize:  maxFileSize,
+		ChunkSize:    chunkSize,
+		TempDir:      tempDir,
+		Seed:         seed,
+		WorkerCount:  runtime.NumCPU(),
+		CollatorPool: collatorPool,
 	}
 
 	nowSplit := time.Now()
@@ -99,9 +115,10 @@ func splitAndSort(sourcePath, outputPath string, maxFileSize, chunkSize int, see
 	fmt.Println("Split done in", time.Since(nowSplit).Round(time.Millisecond))
 
 	sorter := Sorter{
-		OutputPath:  outputPath,
-		Files:       splitFiles,
-		MaxFileSize: maxFileSize,
+		OutputPath:   outputPath,
+		Files:        splitFiles,
+		MaxFileSize:  maxFileSize,
+		CollatorPool: collatorPool,
 	}
 
 	nowSort := time.Now()
@@ -116,22 +133,25 @@ func splitAndSort(sourcePath, outputPath string, maxFileSize, chunkSize int, see
 	return nil
 }
 
-func checkIsSorted(sourcePath string) error {
+func checkIsSorted(sourcePath string, collatorPool *CollatorPool) error {
+	collator := collatorPool.Get()
+	defer collatorPool.Put(collator)
+
 	reader, err := NewReader(sourcePath)
 	if err != nil {
 		return err
 	}
 
-	var currentLine Line
+	var currentLine *Line
 	for {
 		line, err := reader.NextLine()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
 			return err
 		}
-		if line.Less(currentLine) {
+		if line == nil {
+			break
+		}
+		if currentLine != nil && line.Less(currentLine, collator) {
 			fmt.Println("not sorted")
 			return nil
 		}

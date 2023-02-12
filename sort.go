@@ -1,24 +1,23 @@
 package main
 
 import (
-	"errors"
-	"io"
 	"log"
 	"os"
 	"sort"
 )
 
 type Sorter struct {
-	OutputPath  string
-	Files       []File
-	MaxFileSize int
+	OutputPath   string
+	Files        []File
+	MaxFileSize  int
+	CollatorPool *CollatorPool
 
 	currentSize      int
 	currentFileIndex int
 }
 
 type SortedFileLines struct {
-	SortedLines []Line
+	SortedLines []*Line
 	FileIndex   int
 }
 
@@ -35,7 +34,7 @@ func (s *Sorter) Sort() error {
 	sortedFileLinesCh := make(chan SortedFileLines)
 
 	writtenFileIndex := -1
-	pendingLines := make(map[int][]Line)
+	pendingLines := make(map[int][]*Line)
 
 	s.scheduleNextFiles(sortedFileLinesCh)
 
@@ -102,27 +101,30 @@ func (s *Sorter) scheduleNextFiles(sortedFileLinesCh chan<- SortedFileLines) {
 	}
 }
 
-func (s *Sorter) sortFileLines(sourcePath string) ([]Line, error) {
+func (s *Sorter) sortFileLines(sourcePath string) ([]*Line, error) {
+	collator := s.CollatorPool.Get()
+	defer s.CollatorPool.Put(collator)
+
 	reader, err := NewReader(sourcePath)
 	if err != nil {
 		return nil, err
 	}
 
-	var allLines []Line
+	var allLines []*Line
 	for {
 		line, err := reader.NextLine()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
 			return nil, err
+		}
+		if line == nil {
+			break
 		}
 
 		allLines = append(allLines, line)
 	}
 
 	sort.Slice(allLines, func(i, j int) bool {
-		return allLines[i].Less(allLines[j])
+		return allLines[i].Less(allLines[j], collator)
 	})
 
 	return allLines, nil

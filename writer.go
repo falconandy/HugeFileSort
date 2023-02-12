@@ -27,7 +27,7 @@ func NewWriter(filePath string) (*Writer, error) {
 	}, nil
 }
 
-func (w *Writer) WriteLines(lines []Line) error {
+func (w *Writer) WriteLines(lines []*Line) error {
 	for _, line := range lines {
 		err := w.WriteLine(line)
 		if err != nil {
@@ -37,8 +37,8 @@ func (w *Writer) WriteLines(lines []Line) error {
 	return nil
 }
 
-func (w *Writer) WriteLine(line Line) error {
-	n, err := w.bw.WriteString(strconv.Itoa(line.index))
+func (w *Writer) WriteLine(line *Line) error {
+	n, err := w.bw.WriteString(strconv.FormatInt(line.index, 10))
 	if err != nil {
 		return err
 	}
