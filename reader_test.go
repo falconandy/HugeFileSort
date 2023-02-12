@@ -1,8 +1,6 @@
 package main
 
 import (
-	"errors"
-	"io"
 	"os"
 	"testing"
 
@@ -30,24 +28,24 @@ func TestReader(t *testing.T) {
 
 	line, err := r.NextLine()
 	assert.Nil(t, err)
-	assert.Equal(t, 111111, line.index)
+	assert.Equal(t, int64(111111), line.index)
 	assert.Equal(t, "abc", string(line.text))
 
 	line, err = r.NextLine()
 	assert.Nil(t, err)
-	assert.Equal(t, 22222, line.index)
+	assert.Equal(t, int64(22222), line.index)
 	assert.Equal(t, "xyz", string(line.text))
 
 	line, err = r.NextLine()
 	assert.Nil(t, err)
-	assert.Equal(t, 3, line.index)
+	assert.Equal(t, int64(3), line.index)
 	assert.Equal(t, "q", string(line.text))
 
 	line, err = r.NextLine()
 	assert.Nil(t, err)
-	assert.Equal(t, 4444444, line.index)
+	assert.Equal(t, int64(4444444), line.index)
 	assert.Equal(t, "qwerty", string(line.text))
 
 	line, err = r.NextLine()
-	assert.True(t, errors.Is(err, io.EOF))
+	assert.Nil(t, line)
 }

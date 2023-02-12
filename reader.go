@@ -31,9 +31,11 @@ func (r *Reader) NextLine() (*Line, error) {
 	data, err := r.br.ReadBytes('\n')
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
+			_ = r.f.Close()
 			return nil, err
 		}
 		if len(data) == 0 {
+			_ = r.f.Close()
 			return nil, nil
 		}
 	}

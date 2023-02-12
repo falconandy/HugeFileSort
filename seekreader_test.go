@@ -28,16 +28,16 @@ func TestSeekReader(t *testing.T) {
 
 	line, err := r.Line(1)
 	assert.Nil(t, err)
-	assert.Equal(t, 22222, line.index)
+	assert.Equal(t, int64(22222), line.index)
 	assert.Equal(t, []byte("xyz"), line.text)
 
 	line, err = r.Line(20)
 	assert.Nil(t, err)
-	assert.Equal(t, 3, line.index)
+	assert.Equal(t, int64(3), line.index)
 	assert.Equal(t, []byte("q"), line.text)
 
 	line, err = r.Line(0)
 	assert.Nil(t, err)
-	assert.Equal(t, 22222, line.index)
+	assert.Equal(t, int64(22222), line.index)
 	assert.Equal(t, []byte("xyz"), line.text)
 }
